@@ -1,6 +1,6 @@
 name: ojt_connect
 description: "A new Flutter project."
-publish_to: 'none'
+publish_to: "none"
 
 version: 1.0.0+1
 
@@ -20,7 +20,8 @@ dependencies:
   latlong2: ^0.9.0
   geolocator: ^13.0.1
   app_settings: ^5.1.1
-  
+  geodesy: ^0.10.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -28,12 +29,13 @@ dev_dependencies:
   flutter_native_splash: ^2.4.1
 
 flutter_native_splash:
-  color: "#ffffff"        # Background color of splash
-  image: assets/logo.png  # Path to your logo file
+  color: "#ffffff" # Background color of splash
+  image: assets/logo.png # Path to your logo file
   android: true
   ios: true
 
 flutter:
   uses-material-design: true
   assets:
-    - assets/logo.png      # Declare your logo asset
+    - assets/logo.png
+    - assets/ojtzone/ojt_zone.geojson
