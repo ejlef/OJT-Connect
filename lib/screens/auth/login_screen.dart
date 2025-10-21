@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'choice_screen.dart';
 import 'register_screen.dart';
+import '../dashboard/user_dashboard.dart';
 
 class LoginScreen extends StatefulWidget {
   final bool isAdmin; // true = Admin Login, false = Student Login
@@ -23,7 +24,7 @@ class _LoginScreenState extends State<LoginScreen> {
     String email = _emailController.text.trim();
     String password = _passwordController.text.trim();
 
-    // Hash password
+    // Hash password using SHA256
     String hashedPassword = sha256.convert(utf8.encode(password)).toString();
 
     try {
@@ -35,10 +36,19 @@ class _LoginScreenState extends State<LoginScreen> {
           .get();
 
       if (query.docs.isNotEmpty) {
+        final userDoc = query.docs.first;
+        final userId = userDoc.id;
+
         if (widget.isAdmin) {
           Navigator.pushReplacementNamed(context, '/adminDashboard');
         } else {
-          Navigator.pushReplacementNamed(context, '/userDashboard');
+          // Pass Firestore userId to dashboard
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => UserDashboard(userId: userId),
+            ),
+          );
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

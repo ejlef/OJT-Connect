@@ -6,7 +6,8 @@ import 'screens/auth/login_screen.dart';
 import 'screens/auth/register_screen.dart';
 import 'screens/dashboard/admin_dashboard.dart';
 import 'screens/dashboard/user_dashboard.dart';
-import 'firebase_options.dart'; 
+import 'firebase_options.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -32,7 +33,10 @@ class OJTConnectApp extends StatelessWidget {
         '/loginStudent': (context) => const LoginScreen(isAdmin: false),
         '/register': (context) => const RegisterScreen(),
         '/adminDashboard': (context) => const AdminDashboard(),
-        '/userDashboard': (context) => const UserDashboard(),
+        '/userDashboard': (context) {
+          final args = ModalRoute.of(context)!.settings.arguments as Map;
+          return UserDashboard(userId: args['userId']);
+        },
       },
     );
   }
