@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geodesy/geodesy.dart';
 import 'package:app_settings/app_settings.dart';
-import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../auth/choice_screen.dart';
@@ -31,17 +29,17 @@ class _UserDashboardState extends State<UserDashboard> {
   String _course = "";
   String _schoolId = "";
 
+  String? _teamId;
+  String? _teamName;
+  List<LatLng> teamPolygon = [];
+
   StreamSubscription<Position>? _geofenceStream;
   final Geodesy geodesy = Geodesy();
-  List<List<LatLng>> allPolygons = [];
-  final String geoJsonSource =
-      'https://raw.githubusercontent.com/ejlef/OJT_Connect_ojtzone/refs/heads/main/ojtzone.geojson';
 
   @override
   void initState() {
     super.initState();
-    _loadUserData();
-    _loadAllPolygons();
+    _loadUserData().then((_) => _loadTeamPolygon());
   }
 
   Future<void> _loadUserData() async {
@@ -57,6 +55,7 @@ class _UserDashboardState extends State<UserDashboard> {
           _lname = data['lname'] ?? '';
           _course = data['course'] ?? '';
           _schoolId = data['schoolId'] ?? '';
+          _teamId = data['teamId']; // contains team name in your DB
         });
       }
     } catch (e) {
@@ -64,35 +63,58 @@ class _UserDashboardState extends State<UserDashboard> {
     }
   }
 
-  // Load all polygons from GeoJSON
-  Future<void> _loadAllPolygons() async {
+  Future<void> _loadTeamPolygon() async {
+    if (_teamId == null) {
+      setState(() {
+        _status = "❌ You are not assigned to a team";
+      });
+      return;
+    }
+
     try {
-      setState(() => _status = "Fetching OJT Zones...");
-      final response = await http.get(Uri.parse(geoJsonSource));
-      if (response.statusCode != 200) throw Exception("Failed to load GeoJSON");
+      setState(() => _status = "Fetching your team OJT Zone...");
 
-      final data = jsonDecode(response.body);
-      allPolygons.clear();
+      // Query the teams collection by name
+      final teamQuery = await FirebaseFirestore.instance
+          .collection('teams')
+          .where('name', isEqualTo: _teamId)
+          .limit(1)
+          .get();
 
-      for (var feature in data["features"]) {
-        final geometry = feature["geometry"];
-        List<dynamic> coords = [];
-        if (geometry["type"] == "Polygon") {
-          coords = geometry["coordinates"][0];
-        } else if (geometry["type"] == "MultiPolygon") {
-          coords = geometry["coordinates"][0][0];
-        }
-        allPolygons.add(coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList());
+      if (teamQuery.docs.isEmpty) {
+        setState(() => _status = "❌ No OJT Zone found for your team");
+        return;
       }
+
+      final teamDoc = teamQuery.docs.first;
+
+      // Read zone safely
+      final zone = Map<String, dynamic>.from(teamDoc['zone']);
+      final northEast = Map<String, dynamic>.from(zone['northEast']);
+      final southWest = Map<String, dynamic>.from(zone['southWest']);
+
+      final neLat = (northEast['lat'] as num).toDouble();
+      final neLng = (northEast['lng'] as num).toDouble();
+      final swLat = (southWest['lat'] as num).toDouble();
+      final swLng = (southWest['lng'] as num).toDouble();
+
+      teamPolygon = [
+        LatLng(swLat, swLng),
+        LatLng(swLat, neLng),
+        LatLng(neLat, neLng),
+        LatLng(neLat, swLng),
+        LatLng(swLat, swLng),
+      ];
 
       setState(() {
         _zoneLoaded = true;
-        _status = "✅ All OJT Zones loaded!";
+        _teamName = teamDoc['name'];
+        _status = "✅ Your team OJT Zone loaded!";
       });
 
       _startGeofencing();
     } catch (e) {
-      setState(() => _status = "❌ Failed to load OJT Zones: $e");
+      setState(() => _status = "❌ Failed to load team OJT Zone: $e");
     }
   }
 
@@ -137,7 +159,8 @@ class _UserDashboardState extends State<UserDashboard> {
     }
 
     Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation);
+      desiredAccuracy: LocationAccuracy.bestForNavigation,
+    );
     _updateLocation(LatLng(pos.latitude, pos.longitude));
 
     _geofenceStream?.cancel();
@@ -152,19 +175,18 @@ class _UserDashboardState extends State<UserDashboard> {
   }
 
   void _updateLocation(LatLng newLoc) {
-    bool insideAny = false;
-    for (var polygon in allPolygons) {
-      if (geodesy.isGeoPointInPolygon(newLoc, polygon)) {
-        insideAny = true;
-        break;
-      }
+    bool insideZone = false;
+    if (teamPolygon.isNotEmpty) {
+      insideZone = geodesy.isGeoPointInPolygon(newLoc, teamPolygon);
     }
 
-    if (_isInsideArea != insideAny) {
+    if (_isInsideArea != insideZone) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(insideAny ? "🚪 ENTERED OJT Zone" : "🚶‍♂️ EXITED OJT Zone"),
-          backgroundColor: insideAny ? Colors.green : Colors.red,
+          content: Text(
+            insideZone ? "🚪 ENTERED OJT Zone" : "🚶‍♂️ EXITED OJT Zone",
+          ),
+          backgroundColor: insideZone ? Colors.green : Colors.red,
           duration: const Duration(seconds: 2),
         ),
       );
@@ -172,12 +194,22 @@ class _UserDashboardState extends State<UserDashboard> {
 
     setState(() {
       _currentLocation = newLoc;
-      _isInsideArea = insideAny;
-      _status = insideAny ? "✅ Inside OJT Zone" : "❌ Outside OJT Zone";
+      _isInsideArea = insideZone;
+      _status = insideZone ? "✅ Inside OJT Zone" : "❌ Outside OJT Zone";
     });
   }
 
   Future<void> _markAttendance() async {
+    if (_teamId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("❌ Only team members can mark attendance"),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     if (!_isInsideArea || _currentLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -198,11 +230,16 @@ class _UserDashboardState extends State<UserDashboard> {
         'studentName': '$_fname $_lname',
         'course': _course,
         'schoolId': _schoolId,
+        'teamId': _teamId,
+        'teamName': _teamName,
         'date': date,
         'time': time,
         'status': status,
         'insideZone': _isInsideArea,
-        'location': GeoPoint(_currentLocation!.latitude, _currentLocation!.longitude),
+        'location': GeoPoint(
+          _currentLocation!.latitude,
+          _currentLocation!.longitude,
+        ),
         'timestamp': FieldValue.serverTimestamp(),
       });
 
@@ -210,7 +247,11 @@ class _UserDashboardState extends State<UserDashboard> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(_checkedIn ? "✅ Checked in successfully!" : "✅ Checked out successfully!"),
+          content: Text(
+            _checkedIn
+                ? "✅ Checked in successfully!"
+                : "✅ Checked out successfully!",
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -224,7 +265,9 @@ class _UserDashboardState extends State<UserDashboard> {
   Future<void> _calibrateGPS() async {
     setState(() => _isCalibrating = true);
     try {
-      await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.bestForNavigation);
+      await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      );
       await AppSettings.openAppSettings(type: AppSettingsType.location);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -234,7 +277,10 @@ class _UserDashboardState extends State<UserDashboard> {
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Calibration failed: $e"), backgroundColor: Colors.red),
+        SnackBar(
+          content: Text("Calibration failed: $e"),
+          backgroundColor: Colors.red,
+        ),
       );
     }
     setState(() => _isCalibrating = false);
@@ -247,7 +293,8 @@ class _UserDashboardState extends State<UserDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final mapCenter = _currentLocation ?? (allPolygons.isNotEmpty ? allPolygons.first.first : const LatLng(10.6, 122.6));
+    final mapCenter = _currentLocation ??
+        (teamPolygon.isNotEmpty ? teamPolygon.first : const LatLng(10.6, 122.6));
 
     return Scaffold(
       appBar: AppBar(
@@ -255,7 +302,10 @@ class _UserDashboardState extends State<UserDashboard> {
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
-            onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ChoiceScreen())),
+            onPressed: () => Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (_) => const ChoiceScreen()),
+            ),
           ),
         ],
       ),
@@ -270,9 +320,20 @@ class _UserDashboardState extends State<UserDashboard> {
               children: [
                 Row(
                   children: [
-                    const CircleAvatar(radius: 28, child: Icon(Icons.person, size: 32)),
+                    const CircleAvatar(
+                      radius: 28,
+                      child: Icon(Icons.person, size: 32),
+                    ),
                     const SizedBox(width: 12),
-                    Text('Welcome, $_fname $_lname!', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: Text(
+                        'Welcome, $_fname $_lname!\nTeam: ${_teamName ?? "None"}',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 24),
@@ -280,37 +341,72 @@ class _UserDashboardState extends State<UserDashboard> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     _DashboardButton(
-                        icon: Icons.check_circle,
-                        label: _checkedIn ? "Check Out" : "Check In",
-                        onTap: _markAttendance),
-                    _DashboardButton(icon: Icons.refresh, label: "Restart GPS", onTap: _startGeofencing, isLoading: _isLoading),
-                    _DashboardButton(icon: Icons.my_location, label: "Calibrate", onTap: _calibrateGPS, isLoading: _isCalibrating),
+                      icon: Icons.check_circle,
+                      label: _checkedIn ? "Check Out" : "Check In",
+                      onTap: _markAttendance,
+                      isDisabled: _teamId == null || _isLoading,
+                    ),
+                    _DashboardButton(
+                      icon: Icons.refresh,
+                      label: "Restart GPS",
+                      onTap: _startGeofencing,
+                      isLoading: _isLoading,
+                    ),
+                    _DashboardButton(
+                      icon: Icons.my_location,
+                      label: "Calibrate",
+                      onTap: _calibrateGPS,
+                      isLoading: _isCalibrating,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                Text(_status, style: TextStyle(fontSize: 14, color: _isInsideArea ? Colors.green : Colors.red)),
+                Text(
+                  _status,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: _isInsideArea ? Colors.green : Colors.red,
+                  ),
+                ),
                 const SizedBox(height: 12),
                 if (_zoneLoaded)
                   SizedBox(
                     height: 400,
                     child: FlutterMap(
-                      options: MapOptions(initialCenter: mapCenter, initialZoom: 17),
+                      options: MapOptions(
+                        initialCenter: mapCenter,
+                        initialZoom: 17,
+                      ),
                       children: [
-                        TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.ojtconnect'),
-                        PolygonLayer(
-                          polygons: allPolygons.map((polygon) {
-                            return Polygon(
-                              points: polygon,
-                              borderColor: Colors.blue,
-                              borderStrokeWidth: 2,
-                              color: Colors.blue.withOpacity(0.3),
-                            );
-                          }).toList(),
+                        TileLayer(
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.example.ojtconnect',
+                        ),
+                        PolygonLayer<Object>(
+                          polygons: teamPolygon.isNotEmpty
+                              ? <Polygon<Object>>[
+                                  Polygon<Object>(
+                                    points: teamPolygon,
+                                    borderColor: Colors.blue,
+                                    borderStrokeWidth: 2,
+                                    color: Colors.blue.withOpacity(0.3),
+                                  ),
+                                ]
+                              : <Polygon<Object>>[],
                         ),
                         MarkerLayer(
                           markers: [
                             if (_currentLocation != null)
-                              Marker(point: _currentLocation!, width: 60, height: 60, child: const Icon(Icons.my_location, color: Colors.green, size: 35))
+                              Marker(
+                                point: _currentLocation!,
+                                width: 60,
+                                height: 60,
+                                child: const Icon(
+                                  Icons.my_location,
+                                  color: Colors.green,
+                                  size: 35,
+                                ),
+                              ),
                           ],
                         ),
                       ],
@@ -332,23 +428,41 @@ class _DashboardButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final bool isLoading;
-  const _DashboardButton({required this.icon, required this.label, required this.onTap, this.isLoading = false});
+  final bool isDisabled;
+  const _DashboardButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isLoading = false,
+    this.isDisabled = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: isLoading ? null : onTap,
+      onTap: (isLoading || isDisabled) ? null : onTap,
       child: Column(
         children: [
           CircleAvatar(
             radius: 28,
-            backgroundColor: Colors.blue.shade100,
+            backgroundColor:
+                isDisabled ? Colors.grey.shade300 : Colors.blue.shade100,
             child: isLoading
-                ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.blue))
-                : Icon(icon, size: 28, color: Colors.blue),
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      color: Colors.blue,
+                    ),
+                  )
+                : Icon(icon, size: 28, color: isDisabled ? Colors.grey : Colors.blue),
           ),
           const SizedBox(height: 6),
-          Text(label, style: const TextStyle(fontSize: 12)),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: isDisabled ? Colors.grey : Colors.black)),
         ],
       ),
     );
