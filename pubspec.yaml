@@ -23,6 +23,7 @@ dependencies:
   geodesy: ^0.10.2
   http: ^1.5.0
   intl: ^0.20.2
+  flutter_map_geojson: ^1.0.8
 
 dev_dependencies:
   flutter_test:
