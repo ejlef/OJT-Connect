@@ -42,6 +42,7 @@ class _UserDashboardState extends State<UserDashboard> {
     _loadUserData().then((_) => _loadTeamPolygon());
   }
 
+  // 🔹 Load user data including the team document ID
   Future<void> _loadUserData() async {
     try {
       final doc = await FirebaseFirestore.instance
@@ -55,7 +56,7 @@ class _UserDashboardState extends State<UserDashboard> {
           _lname = data['lname'] ?? '';
           _course = data['course'] ?? '';
           _schoolId = data['schoolId'] ?? '';
-          _teamId = data['teamId']; // contains team name in your DB
+          _teamId = data['teamId']; // Store the team document ID
         });
       }
     } catch (e) {
@@ -63,6 +64,7 @@ class _UserDashboardState extends State<UserDashboard> {
     }
   }
 
+  // 🔹 Load team polygon using the document ID
   Future<void> _loadTeamPolygon() async {
     if (_teamId == null) {
       setState(() {
@@ -74,22 +76,20 @@ class _UserDashboardState extends State<UserDashboard> {
     try {
       setState(() => _status = "Fetching your team OJT Zone...");
 
-      // Query the teams collection by name
-      final teamQuery = await FirebaseFirestore.instance
+      final teamDoc = await FirebaseFirestore.instance
           .collection('teams')
-          .where('name', isEqualTo: _teamId)
-          .limit(1)
+          .doc(_teamId) // Query by document ID instead of name
           .get();
 
-      if (teamQuery.docs.isEmpty) {
+      if (!teamDoc.exists) {
         setState(() => _status = "❌ No OJT Zone found for your team");
         return;
       }
 
-      final teamDoc = teamQuery.docs.first;
+      final data = teamDoc.data()!;
+      _teamName = data['name'];
 
-      // Read zone safely
-      final zone = Map<String, dynamic>.from(teamDoc['zone']);
+      final zone = Map<String, dynamic>.from(data['zone']);
       final northEast = Map<String, dynamic>.from(zone['northEast']);
       final southWest = Map<String, dynamic>.from(zone['southWest']);
 
@@ -108,7 +108,6 @@ class _UserDashboardState extends State<UserDashboard> {
 
       setState(() {
         _zoneLoaded = true;
-        _teamName = teamDoc['name'];
         _status = "✅ Your team OJT Zone loaded!";
       });
 

@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'login_screen.dart';
+import 'choice_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -12,6 +13,8 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _fnameController = TextEditingController();
@@ -23,7 +26,42 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String? _selectedGender;
   DateTime? _selectedBirthday;
 
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  List<DropdownMenuItem<String>> _teamItems = [];
+  String? _selectedTeamId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTeams();
+  }
+
+  Future<void> _loadTeams() async {
+    try {
+      final snapshot = await _firestore.collection('teams').get();
+      setState(() {
+        _teamItems = snapshot.docs.map((doc) {
+          return DropdownMenuItem(
+            value: doc.id, // Use document ID
+            child: Text(doc['name']),
+          );
+        }).toList();
+      });
+    } catch (e) {
+      debugPrint("Error loading teams: $e");
+    }
+  }
+
+  Future<void> _pickBirthday() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime(2000),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      setState(() => _selectedBirthday = picked);
+    }
+  }
 
   Future<void> registerUser() async {
     String email = _emailController.text.trim();
@@ -42,7 +80,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ageText.isEmpty ||
         _selectedBirthday == null ||
         schoolId.isEmpty ||
-        course.isEmpty) {
+        course.isEmpty ||
+        _selectedTeamId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please fill in all fields")),
       );
@@ -64,7 +103,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return;
       }
 
-      // Hash password
       String hashedPassword = sha256.convert(utf8.encode(password)).toString();
 
       await _firestore.collection('users').add({
@@ -77,6 +115,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'birthday': Timestamp.fromDate(_selectedBirthday!),
         'schoolId': schoolId,
         'course': course,
+        'teamId': _selectedTeamId, // save team document ID
         'isAdmin': false,
       });
 
@@ -84,31 +123,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
         const SnackBar(content: Text("Account created successfully!")),
       );
 
-      Navigator.pushReplacement(
+      // Navigate to login screen safely
+      Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(
-          builder: (context) => const LoginScreen(isAdmin: false),
-        ),
+        MaterialPageRoute(builder: (_) => const LoginScreen(isAdmin: false)),
+        (route) => false,
       );
     } catch (e) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text("Error: $e")));
-    }
-  }
-
-  Future<void> _pickBirthday() async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime(2000),
-      firstDate: DateTime(1900),
-      lastDate: DateTime.now(),
-    );
-
-    if (picked != null) {
-      setState(() {
-        _selectedBirthday = picked;
-      });
     }
   }
 
@@ -119,99 +143,88 @@ class _RegisterScreenState extends State<RegisterScreen> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
-            Navigator.pushReplacement(
+            // Navigate back to ChoiceScreen safely
+            Navigator.pushAndRemoveUntil(
               context,
-              MaterialPageRoute(
-                builder: (context) => const LoginScreen(isAdmin: false),
-              ),
+              MaterialPageRoute(builder: (_) => const ChoiceScreen()),
+              (route) => false,
             );
           },
         ),
-        title: const Text("Student Register"),
+        title: const Text("Register"),
       ),
       body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              TextField(
-                controller: _fnameController,
-                decoration: const InputDecoration(labelText: "First Name"),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _lnameController,
-                decoration: const InputDecoration(labelText: "Last Name"),
-              ),
-              const SizedBox(height: 12),
-
-              DropdownButtonFormField<String>(
-                value: _selectedGender,
-                items: const [
-                  DropdownMenuItem(value: "Male", child: Text("Male")),
-                  DropdownMenuItem(value: "Female", child: Text("Female")),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    _selectedGender = value;
-                  });
-                },
-                decoration: const InputDecoration(labelText: "Gender"),
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: _ageController,
-                decoration: const InputDecoration(labelText: "Age"),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 12),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _selectedBirthday == null
-                          ? "No birthday selected"
-                          : "Birthday: ${_selectedBirthday!.toLocal().toString().split(' ')[0]}",
-                    ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _fnameController,
+              decoration: const InputDecoration(labelText: "First Name"),
+            ),
+            TextField(
+              controller: _lnameController,
+              decoration: const InputDecoration(labelText: "Last Name"),
+            ),
+            DropdownButtonFormField<String>(
+              value: _selectedGender,
+              items: const [
+                DropdownMenuItem(value: "Male", child: Text("Male")),
+                DropdownMenuItem(value: "Female", child: Text("Female")),
+              ],
+              onChanged: (val) => setState(() => _selectedGender = val),
+              decoration: const InputDecoration(labelText: "Gender"),
+            ),
+            TextField(
+              controller: _ageController,
+              decoration: const InputDecoration(labelText: "Age"),
+              keyboardType: TextInputType.number,
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _selectedBirthday == null
+                        ? "No birthday selected"
+                        : "Birthday: ${_selectedBirthday!.toLocal().toString().split(' ')[0]}",
                   ),
-                  TextButton(
-                    onPressed: _pickBirthday,
-                    child: const Text("Pick Date"),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-
-              TextField(
-                controller: _schoolIdController,
-                decoration: const InputDecoration(labelText: "School ID"),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _courseController,
-                decoration: const InputDecoration(labelText: "Course"),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _emailController,
-                decoration: const InputDecoration(labelText: "Email"),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _passwordController,
-                decoration: const InputDecoration(labelText: "Password"),
-                obscureText: true,
-              ),
-              const SizedBox(height: 20),
-
-              ElevatedButton(
-                onPressed: registerUser,
-                child: const Text("Register"),
-              ),
-            ],
-          ),
+                ),
+                TextButton(
+                  onPressed: _pickBirthday,
+                  child: const Text("Pick Date"),
+                ),
+              ],
+            ),
+            TextField(
+              controller: _schoolIdController,
+              decoration: const InputDecoration(labelText: "School ID"),
+            ),
+            TextField(
+              controller: _courseController,
+              decoration: const InputDecoration(labelText: "Course"),
+            ),
+            TextField(
+              controller: _emailController,
+              decoration: const InputDecoration(labelText: "Email"),
+            ),
+            TextField(
+              controller: _passwordController,
+              decoration: const InputDecoration(labelText: "Password"),
+              obscureText: true,
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _selectedTeamId,
+              items: _teamItems,
+              hint: const Text("Select Team"),
+              onChanged: (val) => setState(() => _selectedTeamId = val),
+              decoration: const InputDecoration(labelText: "Team"),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: registerUser,
+              child: const Text("Register"),
+            ),
+          ],
         ),
       ),
     );

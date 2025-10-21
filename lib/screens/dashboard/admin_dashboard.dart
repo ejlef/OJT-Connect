@@ -5,7 +5,7 @@ import 'package:flutter_map_geojson/flutter_map_geojson.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../auth/choice_screen.dart'; // ✅ Make sure this import is correct
+import '../auth/choice_screen.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -31,16 +31,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _loadQGISZones();
   }
 
-  /// 🔹 Load teams from Firestore
+  /// 🔹 Load teams safely
   Future<void> _loadTeams() async {
     try {
       final snapshot = await _firestore.collection('teams').get();
-
-      if (snapshot.docs.isEmpty) {
-        await _createDefaultTeams();
-        return _loadTeams();
-      }
-
       setState(() {
         _teams = snapshot.docs
             .map(
@@ -50,21 +44,118 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
             )
             .toList();
+        // Reset _selectedTeam if it's no longer in the list
+        if (!_teams.any((item) => item.value == _selectedTeam)) {
+          _selectedTeam = null;
+        }
       });
     } catch (e) {
       debugPrint('Error loading teams: $e');
     }
   }
 
-  /// 🔹 Create default teams if Firestore is empty
-  Future<void> _createDefaultTeams() async {
-    final defaultTeams = [
-      {'name': 'Team A'},
-      {'name': 'Team B'},
-      {'name': 'Team C'},
-    ];
-    for (var team in defaultTeams) {
-      await _firestore.collection('teams').add(team);
+  /// 🔹 Add a new team
+  Future<void> _addTeamDialog() async {
+    final TextEditingController teamNameController = TextEditingController();
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Team'),
+        content: TextField(
+          controller: teamNameController,
+          decoration: const InputDecoration(labelText: 'Team Name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (teamNameController.text.trim().isEmpty) return;
+              Navigator.pop(context, teamNameController.text.trim());
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null) {
+      try {
+        final docRef = await _firestore.collection('teams').add({
+          'name': result,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        await _loadTeams();
+        setState(() => _selectedTeam = docRef.id);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Team added successfully')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error adding team: $e')));
+      }
+    }
+  }
+
+  /// 🔹 Delete selected team and update users
+  Future<void> _deleteTeam() async {
+    if (_selectedTeam == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Please select a team to delete')),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Team"),
+        content: const Text(
+          "Are you sure you want to delete this team? All users in this team will have their team assignment cleared.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("Delete"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        final usersSnapshot = await _firestore
+            .collection('users')
+            .where('teamId', isEqualTo: _selectedTeam)
+            .get();
+
+        for (var userDoc in usersSnapshot.docs) {
+          await _firestore.collection('users').doc(userDoc.id).update({
+            'teamId': null,
+          });
+        }
+
+        await _firestore.collection('teams').doc(_selectedTeam).delete();
+        await _loadTeams();
+        setState(() => _selectedTeam = null);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Team deleted and users updated!')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error deleting team: $e')));
+      }
     }
   }
 
@@ -100,13 +191,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
       }
     }
 
-    // If no polygon tapped
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('⚠️ No zone found at tapped location')),
     );
   }
 
-  /// 🔹 Check if point is inside polygon (ray-casting algorithm)
+  /// 🔹 Point in polygon check
   bool _pointInPolygon(LatLng point, List<LatLng> polygon) {
     int intersectCount = 0;
     for (int j = 0; j < polygon.length - 1; j++) {
@@ -121,10 +211,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
         intersectCount++;
       }
     }
-    return (intersectCount % 2) == 1; // inside if odd
+    return (intersectCount % 2) == 1;
   }
 
-  /// 🔹 Save selected polygon’s bounds to Firestore
+  /// 🔹 Save polygon bounds to Firestore
   Future<void> _setTeamZone() async {
     if (_selectedTeam == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -165,33 +255,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
-  /// 🚪 Logout confirmation dialog
-  Future<void> _confirmLogout(BuildContext context) async {
-    final shouldLogout = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Logout Confirmation"),
-        content: const Text("Are you sure you want to log out?"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text("Logout"),
-          ),
-        ],
-      ),
+  /// 🔹 Back button
+  void _goBack() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const ChoiceScreen()),
     );
-
-    if (shouldLogout == true) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ChoiceScreen()),
-      );
-    }
   }
 
   @override
@@ -200,6 +269,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
         backgroundColor: Colors.blueAccent,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: _goBack,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -209,7 +282,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: () => _confirmLogout(context),
+            onPressed: _goBack,
           ),
         ],
       ),
@@ -217,15 +290,36 @@ class _AdminDashboardState extends State<AdminDashboard> {
         children: [
           Padding(
             padding: const EdgeInsets.all(10),
-            child: DropdownButtonFormField<String>(
-              value: _selectedTeam,
-              items: _teams,
-              hint: const Text('Select Team'),
-              onChanged: (value) => setState(() => _selectedTeam = value),
-              decoration: const InputDecoration(
-                labelText: 'Select Team',
-                border: OutlineInputBorder(),
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _teams.any((item) => item.value == _selectedTeam)
+                        ? _selectedTeam
+                        : null,
+                    items: _teams,
+                    hint: const Text('Select Team'),
+                    onChanged: (value) => setState(() => _selectedTeam = value),
+                    decoration: const InputDecoration(
+                      labelText: 'Select Team',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: _addTeamDialog,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: _deleteTeam,
+                  icon: const Icon(Icons.delete),
+                  label: const Text('Delete'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                ),
+              ],
             ),
           ),
           Expanded(
