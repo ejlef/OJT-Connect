@@ -5,6 +5,7 @@ import 'package:flutter_map_geojson/flutter_map_geojson.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../auth/choice_screen.dart';
 
 class AdminDashboard extends StatefulWidget {
@@ -31,7 +32,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _loadQGISZones();
   }
 
-  /// 🔹 Load teams safely
+  /// Load teams safely
   Future<void> _loadTeams() async {
     try {
       final snapshot = await _firestore.collection('teams').get();
@@ -44,7 +45,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
             )
             .toList();
-        // Reset _selectedTeam if it's no longer in the list
         if (!_teams.any((item) => item.value == _selectedTeam)) {
           _selectedTeam = null;
         }
@@ -54,7 +54,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  /// 🔹 Add a new team
+  /// Add a new team
   Future<void> _addTeamDialog() async {
     final TextEditingController teamNameController = TextEditingController();
 
@@ -101,7 +101,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  /// 🔹 Delete selected team and update users
+  /// Delete selected team and update users
   Future<void> _deleteTeam() async {
     if (_selectedTeam == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -159,7 +159,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  /// 🔹 Load GeoJSON zones
+  /// Load GeoJSON zones
   Future<void> _loadQGISZones() async {
     try {
       const url =
@@ -177,7 +177,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  /// 🔹 Handle map tap to select polygon
+  /// Handle map tap to select polygon
   void _onMapTap(LatLng tapPoint) {
     for (var polygon in polygons) {
       if (_pointInPolygon(tapPoint, polygon.points)) {
@@ -196,7 +196,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
-  /// 🔹 Point in polygon check
+  /// Point in polygon check
   bool _pointInPolygon(LatLng point, List<LatLng> polygon) {
     int intersectCount = 0;
     for (int j = 0; j < polygon.length - 1; j++) {
@@ -214,7 +214,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     return (intersectCount % 2) == 1;
   }
 
-  /// 🔹 Save polygon bounds to Firestore
+  /// Save polygon bounds to Firestore
   Future<void> _setTeamZone() async {
     if (_selectedTeam == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -255,12 +255,41 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
-  /// 🔹 Back button
-  void _goBack() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const ChoiceScreen()),
+  /// Logout with confirmation
+  Future<void> _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
     );
+
+    if (confirm == true) {
+      try {
+        await FirebaseAuth.instance.signOut();
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => const ChoiceScreen()),
+          (route) => false,
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error logging out: $e')));
+      }
+    }
   }
 
   @override
@@ -269,10 +298,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
         backgroundColor: Colors.blueAccent,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _goBack,
-        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -282,7 +307,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: _goBack,
+            onPressed: _logout, // Confirm logout
           ),
         ],
       ),

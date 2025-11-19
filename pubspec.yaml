@@ -1,5 +1,5 @@
 name: ojt_connect
-description: "A new Flutter project."
+description: "A new Flutter project ojt_connect."
 publish_to: "none"
 
 version: 1.0.0+1
@@ -14,6 +14,7 @@ dependencies:
   firebase_core: ^3.6.0
   firebase_auth: ^5.3.1
   cloud_firestore: ^5.4.3
+  video_player: ^2.9.1
 
   crypto: ^3.0.3
   flutter_map: ^7.0.2

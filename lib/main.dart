@@ -10,9 +10,7 @@ import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
   runApp(const OJTConnectApp());
 }
 
@@ -22,19 +20,25 @@ class OJTConnectApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: true,
+      debugShowCheckedModeBanner: false,
       title: 'OJT Connect',
       theme: ThemeData(primarySwatch: Colors.blue),
       initialRoute: '/splash',
       routes: {
         '/splash': (context) => const SplashScreen(),
         '/choice': (context) => const ChoiceScreen(),
-        '/loginAdmin': (context) => const LoginScreen(isAdmin: true),
-        '/loginStudent': (context) => const LoginScreen(isAdmin: false),
+        '/login': (context) {
+          final args =
+              ModalRoute.of(context)!.settings.arguments
+                  as Map<String, dynamic>;
+          return LoginScreen(isAdmin: args['isAdmin']);
+        },
         '/register': (context) => const RegisterScreen(),
         '/adminDashboard': (context) => const AdminDashboard(),
         '/userDashboard': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map;
+          final args =
+              ModalRoute.of(context)!.settings.arguments
+                  as Map<String, dynamic>;
           return UserDashboard(userId: args['userId']);
         },
       },

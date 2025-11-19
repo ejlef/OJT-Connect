@@ -17,6 +17,8 @@ class UserDashboard extends StatefulWidget {
 }
 
 class _UserDashboardState extends State<UserDashboard> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   LatLng? _currentLocation;
   bool _isInsideArea = false;
   bool _checkedIn = false;
@@ -42,7 +44,6 @@ class _UserDashboardState extends State<UserDashboard> {
     _loadUserData().then((_) => _loadTeamPolygon());
   }
 
-  // 🔹 Load user data including the team document ID
   Future<void> _loadUserData() async {
     try {
       final doc = await FirebaseFirestore.instance
@@ -56,7 +57,7 @@ class _UserDashboardState extends State<UserDashboard> {
           _lname = data['lname'] ?? '';
           _course = data['course'] ?? '';
           _schoolId = data['schoolId'] ?? '';
-          _teamId = data['teamId']; // Store the team document ID
+          _teamId = data['teamId'];
         });
       }
     } catch (e) {
@@ -64,7 +65,6 @@ class _UserDashboardState extends State<UserDashboard> {
     }
   }
 
-  // 🔹 Load team polygon using the document ID
   Future<void> _loadTeamPolygon() async {
     if (_teamId == null) {
       setState(() {
@@ -78,7 +78,7 @@ class _UserDashboardState extends State<UserDashboard> {
 
       final teamDoc = await FirebaseFirestore.instance
           .collection('teams')
-          .doc(_teamId) // Query by document ID instead of name
+          .doc(_teamId)
           .get();
 
       if (!teamDoc.exists) {
@@ -290,23 +290,69 @@ class _UserDashboardState extends State<UserDashboard> {
     await Future.delayed(const Duration(seconds: 1));
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final mapCenter = _currentLocation ??
-        (teamPolygon.isNotEmpty ? teamPolygon.first : const LatLng(10.6, 122.6));
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('OJT Connect'),
+  Future<void> _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Logout"),
+        content: const Text("Are you sure you want to logout?"),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const ChoiceScreen()),
-            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Logout"),
           ),
         ],
+      ),
+    );
+
+    if (confirm == true) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const ChoiceScreen()),
+        (route) => false,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mapCenter =
+        _currentLocation ??
+        (teamPolygon.isNotEmpty
+            ? teamPolygon.first
+            : const LatLng(10.6, 122.6));
+
+    return Scaffold(
+      key: _scaffoldKey,
+      appBar: AppBar(
+        title: const Text('OJT Connect'),
+        automaticallyImplyLeading: false,
+      ),
+      endDrawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            UserAccountsDrawerHeader(
+              accountName: Text("$_fname $_lname"),
+              accountEmail: Text(_course),
+              currentAccountPicture: GestureDetector(
+                onTap: () {
+                  Navigator.pop(context);
+                },
+                child: const CircleAvatar(child: Icon(Icons.person, size: 32)),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Logout'),
+              onTap: _logout,
+            ),
+          ],
+        ),
       ),
       body: RefreshIndicator(
         onRefresh: _onRefresh,
@@ -319,9 +365,12 @@ class _UserDashboardState extends State<UserDashboard> {
               children: [
                 Row(
                   children: [
-                    const CircleAvatar(
-                      radius: 28,
-                      child: Icon(Icons.person, size: 32),
+                    GestureDetector(
+                      onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+                      child: const CircleAvatar(
+                        radius: 28,
+                        child: Icon(Icons.person, size: 32),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -336,22 +385,44 @@ class _UserDashboardState extends State<UserDashboard> {
                   ],
                 ),
                 const SizedBox(height: 24),
+
+                // ✅ Main Check In / Out Button
+                Center(
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 60,
+                    child: ElevatedButton.icon(
+                      onPressed: _markAttendance,
+                      icon: Icon(
+                        _checkedIn ? Icons.logout : Icons.login,
+                        size: 28,
+                      ),
+                      label: Text(
+                        _checkedIn ? "Check Out" : "Check In",
+                        style: const TextStyle(fontSize: 20),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _checkedIn ? Colors.red : Colors.green,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+                // ✅ Two small buttons
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    _DashboardButton(
-                      icon: Icons.check_circle,
-                      label: _checkedIn ? "Check Out" : "Check In",
-                      onTap: _markAttendance,
-                      isDisabled: _teamId == null || _isLoading,
-                    ),
-                    _DashboardButton(
+                    _SmallButton(
                       icon: Icons.refresh,
                       label: "Restart GPS",
                       onTap: _startGeofencing,
                       isLoading: _isLoading,
                     ),
-                    _DashboardButton(
+                    _SmallButton(
                       icon: Icons.my_location,
                       label: "Calibrate",
                       onTap: _calibrateGPS,
@@ -359,6 +430,7 @@ class _UserDashboardState extends State<UserDashboard> {
                     ),
                   ],
                 ),
+
                 const SizedBox(height: 16),
                 Text(
                   _status,
@@ -368,6 +440,7 @@ class _UserDashboardState extends State<UserDashboard> {
                   ),
                 ),
                 const SizedBox(height: 12),
+
                 if (_zoneLoaded)
                   SizedBox(
                     height: 400,
@@ -378,7 +451,8 @@ class _UserDashboardState extends State<UserDashboard> {
                       ),
                       children: [
                         TileLayer(
-                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          urlTemplate:
+                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           userAgentPackageName: 'com.example.ojtconnect',
                         ),
                         PolygonLayer<Object>(
@@ -422,46 +496,42 @@ class _UserDashboardState extends State<UserDashboard> {
   }
 }
 
-class _DashboardButton extends StatelessWidget {
+// ✅ Small button widget
+class _SmallButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
   final bool isLoading;
-  final bool isDisabled;
-  const _DashboardButton({
+
+  const _SmallButton({
     required this.icon,
     required this.label,
     required this.onTap,
     this.isLoading = false,
-    this.isDisabled = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: (isLoading || isDisabled) ? null : onTap,
+      onTap: isLoading ? null : onTap,
       child: Column(
         children: [
           CircleAvatar(
-            radius: 28,
-            backgroundColor:
-                isDisabled ? Colors.grey.shade300 : Colors.blue.shade100,
+            radius: 25,
+            backgroundColor: Colors.blue.shade100,
             child: isLoading
                 ? const SizedBox(
-                    width: 24,
-                    height: 24,
+                    width: 20,
+                    height: 20,
                     child: CircularProgressIndicator(
-                      strokeWidth: 3,
+                      strokeWidth: 2,
                       color: Colors.blue,
                     ),
                   )
-                : Icon(icon, size: 28, color: isDisabled ? Colors.grey : Colors.blue),
+                : Icon(icon, size: 25, color: Colors.blue),
           ),
           const SizedBox(height: 6),
-          Text(label,
-              style: TextStyle(
-                  fontSize: 12,
-                  color: isDisabled ? Colors.grey : Colors.black)),
+          Text(label, style: const TextStyle(fontSize: 12)),
         ],
       ),
     );
