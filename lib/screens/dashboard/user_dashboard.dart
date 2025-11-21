@@ -6,6 +6,7 @@ import 'package:geodesy/geodesy.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/choice_screen.dart';
 
 class UserDashboard extends StatefulWidget {
@@ -21,7 +22,7 @@ class _UserDashboardState extends State<UserDashboard> {
 
   LatLng? _currentLocation;
   bool _isInsideArea = false;
-  bool _checkedIn = false;
+  bool _checkedIn = false; // true = pending check-out
   bool _zoneLoaded = false;
   bool _isLoading = false;
   bool _isCalibrating = false;
@@ -38,10 +39,18 @@ class _UserDashboardState extends State<UserDashboard> {
   StreamSubscription<Position>? _geofenceStream;
   final Geodesy geodesy = Geodesy();
 
+  String? _lastCheckInTime;
+
   @override
   void initState() {
     super.initState();
-    _loadUserData().then((_) => _loadTeamPolygon());
+    _initializeDashboard();
+  }
+
+  Future<void> _initializeDashboard() async {
+    await _loadUserData();
+    await _loadTeamPolygon();
+    await _loadTodayAttendance(); // Resume check-in/out
   }
 
   Future<void> _loadUserData() async {
@@ -50,6 +59,7 @@ class _UserDashboardState extends State<UserDashboard> {
           .collection('users')
           .doc(widget.userId)
           .get();
+
       if (doc.exists) {
         final data = doc.data()!;
         setState(() {
@@ -67,9 +77,7 @@ class _UserDashboardState extends State<UserDashboard> {
 
   Future<void> _loadTeamPolygon() async {
     if (_teamId == null) {
-      setState(() {
-        _status = "❌ You are not assigned to a team";
-      });
+      setState(() => _status = "❌ You are not assigned to a team");
       return;
     }
 
@@ -117,6 +125,56 @@ class _UserDashboardState extends State<UserDashboard> {
     }
   }
 
+  /// Load today's attendance and check SharedPreferences first
+  Future<void> _loadTodayAttendance() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final pending = prefs.getBool('pendingCheckOut') ?? false;
+      final lastTime = prefs.getString('lastCheckInTime');
+
+      if (pending) {
+        setState(() {
+          _checkedIn = true; // show Check Out
+          _lastCheckInTime = lastTime;
+        });
+        return;
+      }
+
+      // Fallback to Firestore
+      String today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+      final query = await FirebaseFirestore.instance
+          .collection('attendance')
+          .where('studentId', isEqualTo: widget.userId)
+          .where('date', isEqualTo: today)
+          .orderBy('timestamp', descending: true)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        final last = query.docs.first.data();
+        final status = last['status'] as String? ?? '';
+        final time = last['time'] as String? ?? '';
+
+        setState(() {
+          _checkedIn = status == 'check-in';
+          _lastCheckInTime = _checkedIn ? time : null;
+        });
+      } else {
+        setState(() {
+          _checkedIn = false;
+          _lastCheckInTime = null;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error loading today's attendance: $e");
+      setState(() {
+        _checkedIn = false;
+        _lastCheckInTime = null;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _geofenceStream?.cancel();
@@ -125,7 +183,6 @@ class _UserDashboardState extends State<UserDashboard> {
 
   Future<void> _startGeofencing() async {
     if (!_zoneLoaded) return;
-
     setState(() => _isLoading = true);
 
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -160,6 +217,7 @@ class _UserDashboardState extends State<UserDashboard> {
     Position pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.bestForNavigation,
     );
+
     _updateLocation(LatLng(pos.latitude, pos.longitude));
 
     _geofenceStream?.cancel();
@@ -174,10 +232,9 @@ class _UserDashboardState extends State<UserDashboard> {
   }
 
   void _updateLocation(LatLng newLoc) {
-    bool insideZone = false;
-    if (teamPolygon.isNotEmpty) {
-      insideZone = geodesy.isGeoPointInPolygon(newLoc, teamPolygon);
-    }
+    bool insideZone = teamPolygon.isNotEmpty
+        ? geodesy.isGeoPointInPolygon(newLoc, teamPolygon)
+        : false;
 
     if (_isInsideArea != insideZone) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -242,7 +299,21 @@ class _UserDashboardState extends State<UserDashboard> {
         'timestamp': FieldValue.serverTimestamp(),
       });
 
-      setState(() => _checkedIn = !_checkedIn);
+      final prefs = await SharedPreferences.getInstance();
+      if (!_checkedIn) {
+        // just checked in → set pending check-out
+        await prefs.setBool('pendingCheckOut', true);
+        await prefs.setString('lastCheckInTime', time);
+      } else {
+        // checked out → remove pending
+        await prefs.remove('pendingCheckOut');
+        await prefs.remove('lastCheckInTime');
+      }
+
+      setState(() {
+        _checkedIn = !_checkedIn;
+        _lastCheckInTime = _checkedIn ? time : null;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -321,10 +392,7 @@ class _UserDashboardState extends State<UserDashboard> {
   @override
   Widget build(BuildContext context) {
     final mapCenter =
-        _currentLocation ??
-        (teamPolygon.isNotEmpty
-            ? teamPolygon.first
-            : const LatLng(10.6, 122.6));
+        _currentLocation ?? (teamPolygon.isNotEmpty ? teamPolygon.first : const LatLng(10.6, 122.6));
 
     return Scaffold(
       key: _scaffoldKey,
@@ -332,28 +400,7 @@ class _UserDashboardState extends State<UserDashboard> {
         title: const Text('OJT Connect'),
         automaticallyImplyLeading: false,
       ),
-      endDrawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            UserAccountsDrawerHeader(
-              accountName: Text("$_fname $_lname"),
-              accountEmail: Text(_course),
-              currentAccountPicture: GestureDetector(
-                onTap: () {
-                  Navigator.pop(context);
-                },
-                child: const CircleAvatar(child: Icon(Icons.person, size: 32)),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Logout'),
-              onTap: _logout,
-            ),
-          ],
-        ),
-      ),
+      endDrawer: _buildDrawer(),
       body: RefreshIndicator(
         onRefresh: _onRefresh,
         child: SingleChildScrollView(
@@ -363,130 +410,15 @@ class _UserDashboardState extends State<UserDashboard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
-                      child: const CircleAvatar(
-                        radius: 28,
-                        child: Icon(Icons.person, size: 32),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Welcome, $_fname $_lname!\nTeam: ${_teamName ?? "None"}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                _buildHeader(),
                 const SizedBox(height: 24),
-
-                // ✅ Main Check In / Out Button
-                Center(
-                  child: SizedBox(
-                    width: double.infinity,
-                    height: 60,
-                    child: ElevatedButton.icon(
-                      onPressed: _markAttendance,
-                      icon: Icon(
-                        _checkedIn ? Icons.logout : Icons.login,
-                        size: 28,
-                      ),
-                      label: Text(
-                        _checkedIn ? "Check Out" : "Check In",
-                        style: const TextStyle(fontSize: 20),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _checkedIn ? Colors.red : Colors.green,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
+                _buildCheckInButton(),
                 const SizedBox(height: 16),
-                // ✅ Two small buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _SmallButton(
-                      icon: Icons.refresh,
-                      label: "Restart GPS",
-                      onTap: _startGeofencing,
-                      isLoading: _isLoading,
-                    ),
-                    _SmallButton(
-                      icon: Icons.my_location,
-                      label: "Calibrate",
-                      onTap: _calibrateGPS,
-                      isLoading: _isCalibrating,
-                    ),
-                  ],
-                ),
-
+                _buildSmallButtons(),
                 const SizedBox(height: 16),
-                Text(
-                  _status,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: _isInsideArea ? Colors.green : Colors.red,
-                  ),
-                ),
+                _buildStatusCard(),
                 const SizedBox(height: 12),
-
-                if (_zoneLoaded)
-                  SizedBox(
-                    height: 400,
-                    child: FlutterMap(
-                      options: MapOptions(
-                        initialCenter: mapCenter,
-                        initialZoom: 17,
-                      ),
-                      children: [
-                        TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'com.example.ojtconnect',
-                        ),
-                        PolygonLayer<Object>(
-                          polygons: teamPolygon.isNotEmpty
-                              ? <Polygon<Object>>[
-                                  Polygon<Object>(
-                                    points: teamPolygon,
-                                    borderColor: Colors.blue,
-                                    borderStrokeWidth: 2,
-                                    color: Colors.blue.withOpacity(0.3),
-                                  ),
-                                ]
-                              : <Polygon<Object>>[],
-                        ),
-                        MarkerLayer(
-                          markers: [
-                            if (_currentLocation != null)
-                              Marker(
-                                point: _currentLocation!,
-                                width: 60,
-                                height: 60,
-                                child: const Icon(
-                                  Icons.my_location,
-                                  color: Colors.green,
-                                  size: 35,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  )
-                else
-                  const Center(child: CircularProgressIndicator()),
+                _buildMap(mapCenter),
               ],
             ),
           ),
@@ -494,9 +426,159 @@ class _UserDashboardState extends State<UserDashboard> {
       ),
     );
   }
+
+  Widget _buildDrawer() => Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            UserAccountsDrawerHeader(
+              accountName: Text("$_fname $_lname"),
+              accountEmail: Text(_course),
+              currentAccountPicture: const CircleAvatar(
+                child: Icon(Icons.person, size: 32),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Logout'),
+              onTap: _logout,
+            ),
+          ],
+        ),
+      );
+
+  Widget _buildHeader() => Row(
+        children: [
+          GestureDetector(
+            onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+            child: const CircleAvatar(
+              radius: 28,
+              child: Icon(Icons.person, size: 32),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Welcome, $_fname $_lname!\nTeam: ${_teamName ?? "None"}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      );
+
+  Widget _buildCheckInButton() => Column(
+        children: [
+          if (_lastCheckInTime != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(
+                "Last Check-In: $_lastCheckInTime",
+                style: const TextStyle(fontSize: 14, color: Colors.black54),
+              ),
+            ),
+          SizedBox(
+            width: double.infinity,
+            height: 60,
+            child: ElevatedButton.icon(
+              onPressed: _markAttendance,
+              icon: Icon(_checkedIn ? Icons.logout : Icons.login, size: 28),
+              label: Text(
+                _checkedIn ? "Check Out" : "Check In",
+                style: const TextStyle(fontSize: 20),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _checkedIn ? Colors.red : Colors.green,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+
+  Widget _buildSmallButtons() => Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _SmallButton(
+            icon: Icons.refresh,
+            label: "Restart GPS",
+            onTap: _startGeofencing,
+            isLoading: _isLoading,
+          ),
+          _SmallButton(
+            icon: Icons.my_location,
+            label: "Calibrate",
+            onTap: _calibrateGPS,
+            isLoading: _isCalibrating,
+          ),
+        ],
+      );
+
+  Widget _buildStatusCard() => Card(
+        color: _isInsideArea ? Colors.green.shade50 : Colors.red.shade50,
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            children: [
+              Icon(
+                _isInsideArea ? Icons.check_circle : Icons.cancel,
+                color: _isInsideArea ? Colors.green : Colors.red,
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_status)),
+              Text(
+                DateFormat('HH:mm:ss').format(DateTime.now()),
+                style: const TextStyle(fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildMap(LatLng center) => _zoneLoaded
+      ? SizedBox(
+          height: 400,
+          child: FlutterMap(
+            options: MapOptions(initialCenter: center, initialZoom: 17),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.ojtconnect',
+              ),
+              PolygonLayer<Object>(
+                polygons: teamPolygon.isNotEmpty
+                    ? <Polygon<Object>>[
+                        Polygon<Object>(
+                          points: teamPolygon,
+                          borderColor: Colors.blue,
+                          borderStrokeWidth: 2,
+                          color: Colors.blue.withOpacity(0.3),
+                        ),
+                      ]
+                    : <Polygon<Object>>[],
+              ),
+              MarkerLayer(
+                markers: [
+                  if (_currentLocation != null)
+                    Marker(
+                      point: _currentLocation!,
+                      width: 60,
+                      height: 60,
+                      child: const Icon(
+                        Icons.my_location,
+                        color: Colors.green,
+                        size: 35,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        )
+      : const Center(child: CircularProgressIndicator());
 }
 
-// ✅ Small button widget
 class _SmallButton extends StatelessWidget {
   final IconData icon;
   final String label;

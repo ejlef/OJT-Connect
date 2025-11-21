@@ -25,11 +25,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
   List<Polygon> polygons = [];
   Polygon? _selectedPolygon;
 
+  // ML Predictions
+  List<Map<String, dynamic>> _mlPredictions = [];
+  bool _loadingPredictions = true;
+
   @override
   void initState() {
     super.initState();
     _loadTeams();
     _loadQGISZones();
+    _loadMLPredictions();
   }
 
   /// Load teams safely
@@ -177,6 +182,24 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
+  /// Load ML predictions
+  Future<void> _loadMLPredictions() async {
+    try {
+      final snapshot = await _firestore.collection('ml_predictions').get();
+
+      setState(() {
+        _mlPredictions =
+            snapshot.docs.map((doc) => doc.data()).toList();
+        _mlPredictions.sort((a, b) =>
+            b['lateProbability'].compareTo(a['lateProbability']));
+        _loadingPredictions = false;
+      });
+    } catch (e) {
+      debugPrint('Error loading ML predictions: $e');
+      setState(() => _loadingPredictions = false);
+    }
+  }
+
   /// Handle map tap to select polygon
   void _onMapTap(LatLng tapPoint) {
     for (var polygon in polygons) {
@@ -305,9 +328,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
             onPressed: _loadTeams,
           ),
           IconButton(
+            icon: const Icon(Icons.analytics),
+            tooltip: 'Refresh Predictions',
+            onPressed: () {
+              setState(() => _loadingPredictions = true);
+              _loadMLPredictions();
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: _logout, // Confirm logout
+            onPressed: _logout,
           ),
         ],
       ),
@@ -392,6 +423,62 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 ),
                 textStyle: const TextStyle(fontSize: 16),
               ),
+            ),
+          ),
+          // ML Predictions Section
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '⚠️ Predicted At-Risk Students',
+                  style: TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                _loadingPredictions
+                    ? const Center(child: CircularProgressIndicator())
+                    : _mlPredictions.isEmpty
+                        ? const Text('No ML predictions available.')
+                        : SizedBox(
+                            height: 200,
+                            child: ListView.builder(
+                              itemCount: _mlPredictions.length,
+                              itemBuilder: (context, index) {
+                                final student = _mlPredictions[index];
+                                double lateProb = student['lateProbability'];
+                                double absentProb = student['absentProbability'];
+                                Color statusColor = lateProb > 0.7
+                                    ? Colors.red
+                                    : lateProb > 0.4
+                                        ? Colors.orange
+                                        : Colors.green;
+
+                                return Card(
+                                  margin:
+                                      const EdgeInsets.symmetric(vertical: 4),
+                                  child: ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: statusColor,
+                                      child: Text(
+                                        student['studentId']
+                                            .substring(0, 2)
+                                            .toUpperCase(),
+                                        style: const TextStyle(
+                                            color: Colors.white),
+                                      ),
+                                    ),
+                                    title: Text(student['studentName'] ??
+                                        student['studentId']),
+                                    subtitle: Text(
+                                        'Late: ${(lateProb * 100).toStringAsFixed(1)}% | Absent: ${(absentProb * 100).toStringAsFixed(1)}%'),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+              ],
             ),
           ),
         ],
